@@ -86,12 +86,6 @@ pub struct Image {
     /// the interpretation of the image data
     color_type: u8,
 
-    /// only method 0
-    _compression_method: u8,
-
-    /// only method 0
-    _filter_method: u8,
-
     /// a boolean value to determine if image is interlaced or not
     /// the only available interlace type is "Adam7 interlace"
     interlace_method: bool,
@@ -117,8 +111,6 @@ impl Image {
             height: 0,
             bit_depth: 0,
             color_type: 0,
-            _compression_method: 0,
-            _filter_method: 0,
             interlace_method: false,
             data: Vec::new(),
             plte: None,
@@ -136,8 +128,6 @@ impl Image {
                     image.height = ihdr.height;
                     image.bit_depth = ihdr.bit_depth;
                     image.color_type = ihdr.color_type;
-                    image._compression_method = ihdr._compression_method;
-                    image._filter_method = ihdr._compression_method;
                     image.interlace_method = ihdr.interlace_method;
                 }
                 Chunk::PLTE(plte) => {
@@ -375,12 +365,6 @@ pub struct IHDRData {
     /// the interpretation of the image data
     color_type: u8,
 
-    /// only method 0
-    _compression_method: u8,
-
-    /// only method 0
-    _filter_method: u8,
-
     /// a boolean value to determine if image is interlaced or not
     /// the only available interlace type is "Adam7 interlace"
     interlace_method: bool,
@@ -399,8 +383,7 @@ impl IHDRData {
                 | (data[7] as u32) << (8 * 0),
             bit_depth: data[8],
             color_type: data[9],
-            _compression_method: data[10],
-            _filter_method: data[11],
+            // ignore filter and compression methods since there is only one
             interlace_method: data[12] == 1,
         }
     }
