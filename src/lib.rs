@@ -18,6 +18,13 @@ impl ImageHelper {
 }
 
 #[derive(Debug)]
+struct PLTEEntry {
+    _red: u8,
+    _green: u8,
+    _blue: u8,
+}
+
+#[derive(Debug)]
 pub struct Image {
     /// width in pixels
     width: u32,
@@ -43,6 +50,9 @@ pub struct Image {
 
     /// actual image data
     data: Vec<u8>,
+
+    /// palettes (PLTE chunk)
+    plte: Option<Vec<PLTEEntry>>,
 }
 
 impl Image {
@@ -57,6 +67,7 @@ impl Image {
             _filter_method: 0,
             interlace_method: false,
             data: Vec::new(),
+            plte: None,
         };
 
         loop {
@@ -73,6 +84,16 @@ impl Image {
                     image._filter_method = ihdr._compression_method;
                     image.interlace_method = ihdr.interlace_method;
                 }
+                Chunk::PLTE(plte) => {
+                    // 4.1.2 - There must not be more than one PLTE chunk.
+                    if image.plte.is_some() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "PNG must not have more than one PLTE chunk.",
+                        ));
+                    }
+                    image.plte = Some(plte);
+                }
                 Chunk::IDAT(data) => {
                     // TODO: Decompress and de-filter
                     image.data = data.to_owned();
@@ -81,6 +102,38 @@ impl Image {
             }
         }
 
+        // TODO: validate the image
+        // 4.1.2
+        // This chunk must appear for color type 3, and can appear for
+        // color types 2 and 6; it must not appear for color types 0 and
+        // 4. If this chunk does appear, it must precede the first IDAT
+        // chunk.
+        match image.color_type {
+            0 | 4 => {
+                if image.plte.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "PNG with color type 0 or 4 cannot have a PLTE chunk.",
+                    ));
+                }
+            }
+            3 => {
+                if image.plte.is_none() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "PNG with color type 3 must have a PLTE chunk.",
+                    ));
+                }
+                let bit_depth_range = 2usize.pow(image.bit_depth as u32);
+                if image.plte.as_ref().unwrap().len() > bit_depth_range {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "PNG with color type 3 can not have more entries that its bit depth range.",
+                    ));
+                }
+            }
+            _ => {}
+        }
         Ok(image)
     }
 }
@@ -92,9 +145,9 @@ impl Display for Image {
     }
 }
 
-pub enum Chunk<'a> {
+enum Chunk<'a> {
     IHDR(IHDRData),
-    PLTE(PLTEData),
+    PLTE(Vec<PLTEEntry>),
     IDAT(&'a [u8]),
     IEND,
     SBIT,
@@ -104,10 +157,10 @@ pub enum Chunk<'a> {
 impl<'a> Chunk<'a> {
     fn new(image: &'a mut ImageHelper) -> io::Result<Self> {
         let len_slice = &image.data[image.offset..image.offset + 4];
-        let len = (len_slice[0] as u32) << (8 * 3)
+        let len = ((len_slice[0] as u32) << (8 * 3)
             | (len_slice[1] as u32) << (8 * 2)
             | (len_slice[2] as u32) << (8 * 1)
-            | (len_slice[3] as u32) << (8 * 0);
+            | (len_slice[3] as u32) << (8 * 0)) as usize;
         image.offset += 4;
 
         // get type
@@ -119,9 +172,32 @@ impl<'a> Chunk<'a> {
             "IHDR" => Self::IHDR(IHDRData::from(
                 &image.data[image.offset..image.offset + len as usize],
             )),
-            "PLTE" => Self::PLTE(PLTEData::from(
-                &image.data[image.offset..image.offset + len as usize],
-            )),
+            "PLTE" => {
+                if len % 3 != 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "invalid PLTE chunk",
+                    ));
+                }
+
+                let mut entries = Vec::new();
+                let mut idx = 0usize;
+                let data = &image.data[image.offset..image.offset + len as usize];
+                loop {
+                    if idx == len as usize {
+                        break;
+                    }
+
+                    entries.push(PLTEEntry {
+                        _red: data[idx],
+                        _green: data[idx + 1],
+                        _blue: data[idx + 2],
+                    });
+
+                    idx += 3;
+                }
+                Self::PLTE(entries)
+            }
             "IDAT" => Self::IDAT(&image.data[image.offset..image.offset + len as usize]),
             "IEND" => Self::IEND,
             "sBIT" => Self::SBIT,
@@ -145,17 +221,6 @@ impl<'a> Chunk<'a> {
         image.offset += 4;
 
         Ok(chunk)
-    }
-
-    pub fn print(&self) {
-        match self {
-            Chunk::IHDR(ihdr) => ihdr.print(),
-            Chunk::PLTE(plte) => plte.print(),
-            Chunk::IDAT(data) => println!("{:?}", *data),
-            Chunk::IEND => println!("End of image chunk!"),
-            Chunk::SBIT => println!("sBIT!"),
-            Chunk::TEXT => println!("tEXt!"),
-        }
     }
 }
 
@@ -201,26 +266,5 @@ impl IHDRData {
             _filter_method: data[11],
             interlace_method: data[12] == 1,
         }
-    }
-
-    fn print(&self) {
-        println!("Size: {}x{}px", self.width, self.height);
-        println!("Bit Depth: {}", self.bit_depth);
-        println!("Color Type: {}", self.color_type);
-        println!(
-            "Is interlaced? {}",
-            if self.interlace_method { "Yes" } else { "No" }
-        );
-    }
-}
-
-pub struct PLTEData;
-impl PLTEData {
-    fn from(_data: &[u8]) -> Self {
-        unimplemented!()
-    }
-
-    fn print(&self) {
-        unimplemented!()
     }
 }
