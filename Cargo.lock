@@ -3,5 +3,5 @@
 version = 3
 
 [[package]]
-name = "test-proj"
+name = "png_to_ascii"
 version = "0.1.0"
