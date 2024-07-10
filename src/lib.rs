@@ -145,12 +145,6 @@ impl Image {
                 Chunk::IDAT(data) => {
                     // TODO: Decompress and de-filter
                     image.data.extend(data);
-                    println!(
-                        "data chunk has {} bytes, total data has {} bytes",
-                        data.len(),
-                        image.data.len()
-                    );
-                    // = data.to_owned();
                 }
                 Chunk::BKGD(background) => {
                     if !image.data.is_empty() {
@@ -290,13 +284,12 @@ impl<'a> Chunk<'a> {
 
         // get type
         image.offset += 4;
+        let data = &image.data[image.offset..image.offset + len];
         let chunk = match String::from_utf8_lossy(&image.data[image.offset - 4..image.offset])
             .to_string()
             .as_str()
         {
-            "IHDR" => Self::IHDR(IHDRData::from(
-                &image.data[image.offset..image.offset + len],
-            )),
+            "IHDR" => Self::IHDR(IHDRData::from(data)),
             "PLTE" => {
                 if len % 3 != 0 {
                     pngerr!("invalid PLTE chunk");
@@ -304,7 +297,6 @@ impl<'a> Chunk<'a> {
 
                 let mut entries = Vec::new();
                 let mut idx = 0usize;
-                let data = &image.data[image.offset..image.offset + len];
                 loop {
                     if idx == len as usize {
                         break;
@@ -320,23 +312,20 @@ impl<'a> Chunk<'a> {
                 }
                 Self::PLTE(entries)
             }
-            "IDAT" => Self::IDAT(&image.data[image.offset..image.offset + len]),
+            "IDAT" => Self::IDAT(data),
             "IEND" => Self::IEND,
-            "bKGD" => {
-                let data = &image.data[image.offset..image.offset + len];
-                match len {
-                    1 => Self::BKGD(BKGD::Index(data[0])),
-                    2 => Self::BKGD(BKGD::Grey(u16::from_be_bytes([data[0], data[1]]))),
-                    6 => Self::BKGD(BKGD::RGB(
-                        u16::from_be_bytes([data[0], data[1]]),
-                        u16::from_be_bytes([data[2], data[3]]),
-                        u16::from_be_bytes([data[4], data[5]]),
-                    )),
-                    _ => {
-                        pngerr!("invalid bKGD chunk");
-                    }
+            "bKGD" => match len {
+                1 => Self::BKGD(BKGD::Index(data[0])),
+                2 => Self::BKGD(BKGD::Grey(u16::from_be_bytes([data[0], data[1]]))),
+                6 => Self::BKGD(BKGD::RGB(
+                    u16::from_be_bytes([data[0], data[1]]),
+                    u16::from_be_bytes([data[2], data[3]]),
+                    u16::from_be_bytes([data[4], data[5]]),
+                )),
+                _ => {
+                    pngerr!("invalid bKGD chunk");
                 }
-            }
+            },
             "cHRM" => Self::CHRM,
             "gAMA" => Self::GAMA,
             "hIST" => Self::HIST,
@@ -344,13 +333,10 @@ impl<'a> Chunk<'a> {
             "sBIT" => Self::SBIT,
             "tEXt" => Self::TEXT,
             "tIME" => Self::TIME,
-            "tRNS" => Self::TRNS(&image.data[image.offset..image.offset + len]),
+            "tRNS" => Self::TRNS(data),
             "zTXT" => Self::ZTXT,
             _ => {
-                pngerr!(
-                    "{} is an invalid PNG chunk",
-                    String::from_utf8_lossy(&image.data[image.offset - 4..image.offset])
-                );
+                pngerr!("{} is an invalid PNG chunk", String::from_utf8_lossy(data));
             }
         };
         image.offset += len as usize;
