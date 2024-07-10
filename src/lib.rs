@@ -31,6 +31,48 @@ struct PLTEEntry {
 }
 
 #[derive(Debug)]
+enum Transparancy {
+    Index(Vec<u8>),
+    Grey(u16),
+    RGB(u16, u16, u16),
+}
+
+impl Transparancy {
+    fn for_indexed_color(data: &[u8], plte_len: usize) -> io::Result<Self> {
+        if data.len() > plte_len {
+            pngerr!("tRNS chunk has more entries than PLTE chunk");
+        }
+
+        let mut entries = data.to_owned();
+        for _ in data.len()..plte_len {
+            entries.push(255);
+        }
+
+        Ok(Self::Index(entries))
+    }
+
+    fn for_grayscale(data: &[u8]) -> io::Result<Self> {
+        if data.len() != 2 {
+            pngerr!("invalid tRNS chunk");
+        }
+
+        Ok(Self::Grey(u16::from_be_bytes([data[0], data[1]])))
+    }
+
+    fn for_rgb(data: &[u8]) -> io::Result<Self> {
+        if data.len() != 6 {
+            pngerr!("invalid tRNS chunk");
+        }
+
+        Ok(Self::RGB(
+            u16::from_be_bytes([data[0], data[1]]),
+            u16::from_be_bytes([data[2], data[3]]),
+            u16::from_be_bytes([data[4], data[5]]),
+        ))
+    }
+}
+
+#[derive(Debug)]
 pub struct Image {
     /// width in pixels
     width: u32,
@@ -62,6 +104,9 @@ pub struct Image {
 
     /// background color
     background: Option<BKGD>,
+
+    /// simple transparency
+    transparancy: Option<Transparancy>,
 }
 
 impl Image {
@@ -78,6 +123,7 @@ impl Image {
             data: Vec::new(),
             plte: None,
             background: None,
+            transparancy: None,
         };
 
         loop {
@@ -140,7 +186,32 @@ impl Image {
                     }
                     image.background = Some(background);
                 }
-                _ => {}
+                Chunk::CHRM
+                | Chunk::GAMA
+                | Chunk::HIST
+                | Chunk::PHYS
+                | Chunk::SBIT
+                | Chunk::TEXT
+                | Chunk::TIME
+                | Chunk::ZTXT => {
+                    // ignore - not important in our use-case
+                }
+                Chunk::TRNS(data) => match image.color_type {
+                    3 => {
+                        image.transparancy = Some(Transparancy::for_indexed_color(
+                            data,
+                            image.plte.as_ref().expect("missing PLTE chunk").len(),
+                        )?)
+                    }
+                    0 => image.transparancy = Some(Transparancy::for_grayscale(data)?),
+                    2 => image.transparancy = Some(Transparancy::for_rgb(data)?),
+                    4 | 6 => {
+                        pngerr!("PNG with color types 4 or 6 can not have a tRNS chunk");
+                    }
+                    _ => {
+                        unreachable!();
+                    }
+                },
             }
         }
 
@@ -193,9 +264,15 @@ enum Chunk<'a> {
     IDAT(&'a [u8]),
     IEND,
     BKGD(BKGD),
+    CHRM,
+    GAMA,
+    HIST,
+    PHYS,
     SBIT,
     TEXT,
-    TRNS,
+    TIME,
+    TRNS(&'a [u8]),
+    ZTXT,
 }
 
 impl<'a> Chunk<'a> {
@@ -256,9 +333,15 @@ impl<'a> Chunk<'a> {
                     }
                 }
             }
+            "cHRM" => Self::CHRM,
+            "gAMA" => Self::GAMA,
+            "hIST" => Self::HIST,
+            "pHYs" => Self::PHYS,
             "sBIT" => Self::SBIT,
             "tEXt" => Self::TEXT,
-            "tRNS" => Self::TRNS,
+            "tIME" => Self::TIME,
+            "tRNS" => Self::TRNS(&image.data[image.offset..image.offset + len]),
+            "zTXT" => Self::ZTXT,
             _ => {
                 println!(
                     "Got {}",
