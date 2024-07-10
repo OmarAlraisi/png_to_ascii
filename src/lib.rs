@@ -2,6 +2,12 @@ use std::{fmt::Display, io};
 
 const PNG_HDR: &[u8] = &[137, 80, 78, 71, 13, 10, 26, 10];
 
+macro_rules! pngerr {
+    ($msg:expr) => {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, $msg));
+    };
+}
+
 struct ImageHelper {
     offset: usize,
     data: Vec<u8>,
@@ -53,6 +59,9 @@ pub struct Image {
 
     /// palettes (PLTE chunk)
     plte: Option<Vec<PLTEEntry>>,
+
+    /// background color
+    background: Option<BKGD>,
 }
 
 impl Image {
@@ -68,6 +77,7 @@ impl Image {
             interlace_method: false,
             data: Vec::new(),
             plte: None,
+            background: None,
         };
 
         loop {
@@ -87,16 +97,48 @@ impl Image {
                 Chunk::PLTE(plte) => {
                     // 4.1.2 - There must not be more than one PLTE chunk.
                     if image.plte.is_some() {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "PNG must not have more than one PLTE chunk.",
-                        ));
+                        pngerr!("PNG must not have more than one PLTE chunk");
                     }
+
+                    if image.background.is_some() {
+                        pngerr!("bKGD chunk can not preceed a PLTE chunk");
+                    }
+
                     image.plte = Some(plte);
                 }
                 Chunk::IDAT(data) => {
                     // TODO: Decompress and de-filter
                     image.data = data.to_owned();
+                }
+                Chunk::BKGD(background) => {
+                    if !image.data.is_empty() {
+                        pngerr!("bKGD chunk can not come after the IDAT chunk");
+                    }
+
+                    match image.color_type {
+                        3 => {
+                            if let BKGD::Index(_) = background {
+                            } else {
+                                pngerr!(
+                                    "PNG with color type 3 can only have palette index bKGD chunk"
+                                );
+                            }
+                        }
+                        0 | 4 => {
+                            if let BKGD::Grey(_) = background {
+                            } else {
+                                pngerr!("PNG with color type 0 or 4 can only have grey bKGD chunk");
+                            }
+                        }
+                        2 | 6 => {
+                            if let BKGD::RGB(_, _, _) = background {
+                            } else {
+                                pngerr!("PNG with color type 2 or 6 can only have RGB bKGD chunk");
+                            }
+                        }
+                        _ => {}
+                    }
+                    image.background = Some(background);
                 }
                 _ => {}
             }
@@ -111,25 +153,18 @@ impl Image {
         match image.color_type {
             0 | 4 => {
                 if image.plte.is_some() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "PNG with color type 0 or 4 cannot have a PLTE chunk.",
-                    ));
+                    pngerr!("PNG with color type 0 or 4 cannot have a PLTE chunk");
                 }
             }
             3 => {
                 if image.plte.is_none() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "PNG with color type 3 must have a PLTE chunk.",
-                    ));
+                    pngerr!("PNG with color type 3 must have a PLTE chunk");
                 }
                 let bit_depth_range = 2usize.pow(image.bit_depth as u32);
                 if image.plte.as_ref().unwrap().len() > bit_depth_range {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "PNG with color type 3 can not have more entries that its bit depth range.",
-                    ));
+                    pngerr!(
+                        "PNG with color type 3 can not have more entries that its bit depth range"
+                    );
                 }
             }
             _ => {}
@@ -145,13 +180,22 @@ impl Display for Image {
     }
 }
 
+#[derive(Debug)]
+enum BKGD {
+    Index(u8),
+    Grey(u16),
+    RGB(u16, u16, u16),
+}
+
 enum Chunk<'a> {
     IHDR(IHDRData),
     PLTE(Vec<PLTEEntry>),
     IDAT(&'a [u8]),
     IEND,
+    BKGD(BKGD),
     SBIT,
     TEXT,
+    TRNS,
 }
 
 impl<'a> Chunk<'a> {
@@ -170,19 +214,16 @@ impl<'a> Chunk<'a> {
             .as_str()
         {
             "IHDR" => Self::IHDR(IHDRData::from(
-                &image.data[image.offset..image.offset + len as usize],
+                &image.data[image.offset..image.offset + len],
             )),
             "PLTE" => {
                 if len % 3 != 0 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "invalid PLTE chunk",
-                    ));
+                    pngerr!("invalid PLTE chunk");
                 }
 
                 let mut entries = Vec::new();
                 let mut idx = 0usize;
-                let data = &image.data[image.offset..image.offset + len as usize];
+                let data = &image.data[image.offset..image.offset + len];
                 loop {
                     if idx == len as usize {
                         break;
@@ -198,19 +239,32 @@ impl<'a> Chunk<'a> {
                 }
                 Self::PLTE(entries)
             }
-            "IDAT" => Self::IDAT(&image.data[image.offset..image.offset + len as usize]),
+            "IDAT" => Self::IDAT(&image.data[image.offset..image.offset + len]),
             "IEND" => Self::IEND,
+            "bKGD" => {
+                let data = &image.data[image.offset..image.offset + len];
+                match len {
+                    1 => Self::BKGD(BKGD::Index(data[0])),
+                    2 => Self::BKGD(BKGD::Grey(u16::from_be_bytes([data[0], data[1]]))),
+                    6 => Self::BKGD(BKGD::RGB(
+                        u16::from_be_bytes([data[0], data[1]]),
+                        u16::from_be_bytes([data[2], data[3]]),
+                        u16::from_be_bytes([data[4], data[5]]),
+                    )),
+                    _ => {
+                        pngerr!("invalid bKGD chunk");
+                    }
+                }
+            }
             "sBIT" => Self::SBIT,
             "tEXt" => Self::TEXT,
+            "tRNS" => Self::TRNS,
             _ => {
                 println!(
                     "Got {}",
                     String::from_utf8_lossy(&image.data[image.offset - 4..image.offset])
                 );
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "invalid PNG chunk",
-                ));
+                pngerr!("invalid PNG chunk");
             }
         };
         image.offset += len as usize;
