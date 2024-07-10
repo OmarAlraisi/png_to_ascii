@@ -3,8 +3,8 @@ use std::{fmt::Display, io};
 const PNG_HDR: &[u8] = &[137, 80, 78, 71, 13, 10, 26, 10];
 
 macro_rules! pngerr {
-    ($msg:expr) => {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, $msg));
+    ($($args:tt)*) => {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, format!($($args)*)));
     };
 }
 
@@ -144,7 +144,13 @@ impl Image {
                 }
                 Chunk::IDAT(data) => {
                     // TODO: Decompress and de-filter
-                    image.data = data.to_owned();
+                    image.data.extend(data);
+                    println!(
+                        "data chunk has {} bytes, total data has {} bytes",
+                        data.len(),
+                        image.data.len()
+                    );
+                    // = data.to_owned();
                 }
                 Chunk::BKGD(background) => {
                     if !image.data.is_empty() {
@@ -237,7 +243,15 @@ impl Image {
 impl Display for Image {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // TODO: fix me
-        write!(f, "Image dimention: {}x{}px", self.width, self.height)
+        write!(
+            f,
+            "Dimention: {}x{}px\nColor Type: {}\nBit Depth: {}\nData Size: {} bytes",
+            self.width,
+            self.height,
+            self.color_type,
+            self.bit_depth,
+            self.data.len()
+        )
     }
 }
 
@@ -333,11 +347,10 @@ impl<'a> Chunk<'a> {
             "tRNS" => Self::TRNS(&image.data[image.offset..image.offset + len]),
             "zTXT" => Self::ZTXT,
             _ => {
-                println!(
-                    "Got {}",
+                pngerr!(
+                    "{} is an invalid PNG chunk",
                     String::from_utf8_lossy(&image.data[image.offset - 4..image.offset])
                 );
-                pngerr!("invalid PNG chunk");
             }
         };
         image.offset += len as usize;
