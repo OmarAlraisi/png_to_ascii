@@ -21,6 +21,15 @@ impl ImageHelper {
 
         Ok(Self { offset: 8, data })
     }
+
+    fn next<'a>(&'a mut self) -> io::Result<Option<Chunk<'a>>> {
+        let chunk = Chunk::new(self)?;
+        if let Chunk::IEND = chunk {
+            Ok(None)
+        } else {
+            Ok(Some(chunk))
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -105,7 +114,8 @@ pub struct Image {
 
 impl Image {
     pub fn from(file: &str) -> io::Result<Self> {
-        let mut helper = ImageHelper::from(file)?;
+        // let mut helper = ImageHelper::from(file)?;
+        let mut chunks = ImageHelper::from(file)?;
         let mut image = Self {
             width: 0,
             height: 0,
@@ -118,8 +128,8 @@ impl Image {
             transparancy: None,
         };
 
-        loop {
-            match Chunk::new(&mut helper)? {
+        while let Some(chunk) = chunks.next()? {
+            match chunk {
                 Chunk::IEND => {
                     break;
                 }
