@@ -41,8 +41,8 @@ struct PLTEEntry {
 
 #[derive(Debug)]
 enum Transparancy {
-    Index(Vec<u8>),
-    Grey(u16),
+    PaletteIndex(Vec<u8>),
+    Greyscale(u16),
     RGB(u16, u16, u16),
 }
 
@@ -57,7 +57,7 @@ impl Transparancy {
             entries.push(255);
         }
 
-        Ok(Self::Index(entries))
+        Ok(Self::PaletteIndex(entries))
     }
 
     fn for_grayscale(data: &[u8]) -> io::Result<Self> {
@@ -65,7 +65,7 @@ impl Transparancy {
             pngerr!("invalid tRNS chunk");
         }
 
-        Ok(Self::Grey(u16::from_be_bytes([data[0], data[1]])))
+        Ok(Self::Greyscale(u16::from_be_bytes([data[0], data[1]])))
     }
 
     fn for_rgb(data: &[u8]) -> io::Result<Self> {
@@ -82,6 +82,28 @@ impl Transparancy {
 }
 
 #[derive(Debug)]
+enum ColorType {
+    Greyscale,
+    RGB,
+    PaletteIndex,
+    GreyscaleAlpha,
+    RGBA,
+}
+
+impl Display for ColorType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let color_type = match self {
+            Self::Greyscale => "Greyscale",
+            Self::RGB => "RGB",
+            Self::PaletteIndex => "Palette Index",
+            Self::GreyscaleAlpha => "Greyscale with Alpha",
+            Self::RGBA => "RGB with Alpha",
+        };
+        write!(f, "{}", color_type)
+    }
+}
+
+#[derive(Debug)]
 pub struct Image {
     /// width in pixels
     width: u32,
@@ -93,7 +115,7 @@ pub struct Image {
     bit_depth: u8,
 
     /// the interpretation of the image data
-    color_type: u8,
+    color_type: ColorType,
 
     /// a boolean value to determine if image is interlaced or not
     /// the only available interlace type is "Adam7 interlace"
@@ -120,7 +142,7 @@ impl Image {
             width: 0,
             height: 0,
             bit_depth: 0,
-            color_type: 0,
+            color_type: ColorType::Greyscale,
             interlace_method: false,
             data: Vec::new(),
             plte: None,
@@ -162,27 +184,26 @@ impl Image {
                     }
 
                     match image.color_type {
-                        3 => {
-                            if let BKGD::Index(_) = background {
+                        ColorType::PaletteIndex => {
+                            if let BKGD::PaletteIndex(_) = background {
                             } else {
                                 pngerr!(
                                     "PNG with color type 3 can only have palette index bKGD chunk"
                                 );
                             }
                         }
-                        0 | 4 => {
-                            if let BKGD::Grey(_) = background {
+                        ColorType::Greyscale | ColorType::GreyscaleAlpha => {
+                            if let BKGD::Greyscale(_) = background {
                             } else {
                                 pngerr!("PNG with color type 0 or 4 can only have grey bKGD chunk");
                             }
                         }
-                        2 | 6 => {
+                        ColorType::RGB | ColorType::RGBA => {
                             if let BKGD::RGB(_, _, _) = background {
                             } else {
                                 pngerr!("PNG with color type 2 or 6 can only have RGB bKGD chunk");
                             }
                         }
-                        _ => {}
                     }
                     image.background = Some(background);
                 }
@@ -197,19 +218,18 @@ impl Image {
                     // ignore - not important in our use-case
                 }
                 Chunk::TRNS(data) => match image.color_type {
-                    3 => {
+                    ColorType::PaletteIndex => {
                         image.transparancy = Some(Transparancy::for_indexed_color(
                             data,
                             image.plte.as_ref().expect("missing PLTE chunk").len(),
                         )?)
                     }
-                    0 => image.transparancy = Some(Transparancy::for_grayscale(data)?),
-                    2 => image.transparancy = Some(Transparancy::for_rgb(data)?),
-                    4 | 6 => {
-                        pngerr!("PNG with color types 4 or 6 can not have a tRNS chunk");
+                    ColorType::Greyscale => {
+                        image.transparancy = Some(Transparancy::for_grayscale(data)?)
                     }
-                    _ => {
-                        unreachable!();
+                    ColorType::RGB => image.transparancy = Some(Transparancy::for_rgb(data)?),
+                    ColorType::GreyscaleAlpha | ColorType::RGBA => {
+                        pngerr!("PNG with color types 4 or 6 can not have a tRNS chunk");
                     }
                 },
             }
@@ -222,23 +242,79 @@ impl Image {
         // 4. If this chunk does appear, it must precede the first IDAT
         // chunk.
         match image.color_type {
-            0 | 4 => {
-                if image.plte.is_some() {
-                    pngerr!("PNG with color type 0 or 4 cannot have a PLTE chunk");
-                }
-            }
-            3 => {
-                if image.plte.is_none() {
-                    pngerr!("PNG with color type 3 must have a PLTE chunk");
-                }
-                let bit_depth_range = 2usize.pow(image.bit_depth as u32);
-                if image.plte.as_ref().unwrap().len() > bit_depth_range {
+            ColorType::Greyscale => {
+                // validate bit depth
+                if let 1 | 2 | 4 | 8 | 16 = image.bit_depth {
+                } else {
                     pngerr!(
-                        "PNG with color type 3 can not have more entries that its bit depth range"
+                        "PNG of {} color type must have bit depth of 1, 2, 4, 8, or 16",
+                        image.color_type
+                    );
+                }
+
+                // validate PLTE chunk existance
+                if image.plte.is_some() {
+                    pngerr!(
+                        "PNG of {} color type cannot have a PLTE chunk",
+                        image.color_type
                     );
                 }
             }
-            _ => {}
+            ColorType::GreyscaleAlpha => {
+                // validate bit depth
+                if let 8 | 16 = image.bit_depth {
+                } else {
+                    pngerr!(
+                        "PNG of {} color type must have bit depth of 8 or 16",
+                        image.color_type
+                    );
+                }
+
+                // validate PLTE chunk existance
+                if image.plte.is_some() {
+                    pngerr!(
+                        "PNG of {} color type cannot have a PLTE chunk",
+                        image.color_type
+                    );
+                }
+            }
+            ColorType::PaletteIndex => {
+                // validate bit depth
+                if let 1 | 2 | 4 | 8 = image.bit_depth {
+                } else {
+                    pngerr!(
+                        "PNG of {} color type must have bit depth of 1, 2, 4, or 8",
+                        image.color_type
+                    );
+                }
+
+                // validate PLTE chunk existance
+                if image.plte.is_none() {
+                    pngerr!(
+                        "PNG of {} color type must have a PLTE chunk",
+                        image.color_type
+                    );
+                }
+
+                // validate palette entry length
+                let bit_depth_range = 2usize.pow(image.bit_depth as u32);
+                if image.plte.as_ref().unwrap().len() > bit_depth_range {
+                    pngerr!(
+                        "PNG of {} color type can not have more entries that its bit depth range",
+                        image.color_type
+                    );
+                }
+            }
+            ColorType::RGB | ColorType::RGBA => {
+                // validate bit depth
+                if let 8 | 16 = image.bit_depth {
+                } else {
+                    pngerr!(
+                        "PNG of {} color type must have bit depth of 1, 2, 4, or 8",
+                        image.color_type
+                    );
+                }
+            }
         }
         Ok(image)
     }
@@ -246,14 +322,14 @@ impl Image {
 
 impl Display for Image {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // TODO: fix me
         write!(
             f,
-            "Dimention: {}x{}px\nColor Type: {}\nBit Depth: {}\nData Size: {} bytes",
+            "Dimention: {}x{}px\nColor Type: {}\nBit Depth: {}\nInterlaced: {}\nData Size: {} bytes",
             self.width,
             self.height,
             self.color_type,
             self.bit_depth,
+            if self.interlace_method { "Yes" } else { "No" },
             self.data.len()
         )
     }
@@ -261,8 +337,8 @@ impl Display for Image {
 
 #[derive(Debug)]
 enum BKGD {
-    Index(u8),
-    Grey(u16),
+    PaletteIndex(u8),
+    Greyscale(u16),
     RGB(u16, u16, u16),
 }
 
@@ -299,7 +375,7 @@ impl<'a> Chunk<'a> {
             .to_string()
             .as_str()
         {
-            "IHDR" => Self::IHDR(IHDRData::from(data)),
+            "IHDR" => Self::IHDR(IHDRData::from(data)?),
             "PLTE" => {
                 if len % 3 != 0 {
                     pngerr!("invalid PLTE chunk");
@@ -325,8 +401,8 @@ impl<'a> Chunk<'a> {
             "IDAT" => Self::IDAT(data),
             "IEND" => Self::IEND,
             "bKGD" => match len {
-                1 => Self::BKGD(BKGD::Index(data[0])),
-                2 => Self::BKGD(BKGD::Grey(u16::from_be_bytes([data[0], data[1]]))),
+                1 => Self::BKGD(BKGD::PaletteIndex(data[0])),
+                2 => Self::BKGD(BKGD::Greyscale(u16::from_be_bytes([data[0], data[1]]))),
                 6 => Self::BKGD(BKGD::RGB(
                     u16::from_be_bytes([data[0], data[1]]),
                     u16::from_be_bytes([data[2], data[3]]),
@@ -372,7 +448,7 @@ pub struct IHDRData {
     bit_depth: u8,
 
     /// the interpretation of the image data
-    color_type: u8,
+    color_type: ColorType,
 
     /// a boolean value to determine if image is interlaced or not
     /// the only available interlace type is "Adam7 interlace"
@@ -380,8 +456,8 @@ pub struct IHDRData {
 }
 
 impl IHDRData {
-    fn from(data: &[u8]) -> Self {
-        Self {
+    fn from(data: &[u8]) -> io::Result<Self> {
+        let idhr = Self {
             width: (data[0] as u32) << (8 * 3)
                 | (data[1] as u32) << (8 * 2)
                 | (data[2] as u32) << (8 * 1)
@@ -391,9 +467,23 @@ impl IHDRData {
                 | (data[6] as u32) << (8 * 1)
                 | (data[7] as u32) << (8 * 0),
             bit_depth: data[8],
-            color_type: data[9],
+            color_type: match data[9] {
+                0 => ColorType::Greyscale,
+                2 => ColorType::RGB,
+                3 => ColorType::PaletteIndex,
+                4 => ColorType::GreyscaleAlpha,
+                6 => ColorType::RGBA,
+                _ => {
+                    pngerr!("invalid color type");
+                }
+            },
             // ignore filter and compression methods since there is only one
             interlace_method: data[12] == 1,
-        }
+        };
+
+        Ok(idhr)
     }
 }
+
+// TODO: These are points to reconsider
+//  1. Section 2.5 of the RFC states that "PNG defines several different filter algorithms".
