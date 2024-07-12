@@ -119,7 +119,7 @@ pub struct Image {
 
     /// a boolean value to determine if image is interlaced or not
     /// the only available interlace type is "Adam7 interlace"
-    interlace_method: bool,
+    interlaced: bool,
 
     /// actual image data
     data: Vec<u8>,
@@ -127,10 +127,10 @@ pub struct Image {
     /// palettes (PLTE chunk)
     plte: Option<Vec<PLTEEntry>>,
 
-    /// background color
+    /// background color (bKGD chunk)
     background: Option<BKGD>,
 
-    /// simple transparency
+    /// simple transparency (tRNS chunk)
     transparancy: Option<Transparancy>,
 }
 
@@ -143,7 +143,7 @@ impl Image {
             height: 0,
             bit_depth: 0,
             color_type: ColorType::Greyscale,
-            interlace_method: false,
+            interlaced: false,
             data: Vec::new(),
             plte: None,
             background: None,
@@ -160,7 +160,7 @@ impl Image {
                     image.height = ihdr.height;
                     image.bit_depth = ihdr.bit_depth;
                     image.color_type = ihdr.color_type;
-                    image.interlace_method = ihdr.interlace_method;
+                    image.interlaced = ihdr.interlace_method;
                 }
                 Chunk::PLTE(plte) => {
                     // 4.1.2 - There must not be more than one PLTE chunk.
@@ -329,7 +329,7 @@ impl Display for Image {
             self.height,
             self.color_type,
             self.bit_depth,
-            if self.interlace_method { "Yes" } else { "No" },
+            if self.interlaced { "Yes" } else { "No" },
             self.data.len()
         )
     }
@@ -384,7 +384,7 @@ impl<'a> Chunk<'a> {
                 let mut entries = Vec::new();
                 let mut idx = 0usize;
                 loop {
-                    if idx == len as usize {
+                    if idx == len {
                         break;
                     }
 
@@ -399,7 +399,12 @@ impl<'a> Chunk<'a> {
                 Self::PLTE(entries)
             }
             "IDAT" => Self::IDAT(data),
-            "IEND" => Self::IEND,
+            "IEND" => {
+                if len != 0 {
+                    pngerr!("IEND chunk must not contain any data");
+                }
+                Self::IEND
+            }
             "bKGD" => match len {
                 1 => Self::BKGD(BKGD::PaletteIndex(data[0])),
                 2 => Self::BKGD(BKGD::Greyscale(u16::from_be_bytes([data[0], data[1]]))),
@@ -425,7 +430,7 @@ impl<'a> Chunk<'a> {
                 pngerr!("{} is an invalid PNG chunk", String::from_utf8_lossy(data));
             }
         };
-        image.offset += len as usize;
+        image.offset += len;
 
         // get the CRC
         // TODO: Can actually ignore this
