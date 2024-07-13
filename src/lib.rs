@@ -1,4 +1,8 @@
-use std::{fmt::Display, io};
+use flate2::bufread::ZlibDecoder;
+use std::{
+    fmt::Display,
+    io::{self, Read},
+};
 
 const PNG_HDR: &[u8] = &[137, 80, 78, 71, 13, 10, 26, 10];
 
@@ -136,7 +140,6 @@ pub struct Image {
 
 impl Image {
     pub fn from(file: &str) -> io::Result<Self> {
-        // let mut helper = ImageHelper::from(file)?;
         let mut chunks = ImageHelper::from(file)?;
         let mut image = Self {
             width: 0,
@@ -149,6 +152,7 @@ impl Image {
             background: None,
             transparancy: None,
         };
+        let mut compressed_data: Vec<u8> = Vec::new();
 
         while let Some(chunk) = chunks.next()? {
             match chunk {
@@ -175,11 +179,10 @@ impl Image {
                     image.plte = Some(plte);
                 }
                 Chunk::IDAT(data) => {
-                    // TODO: Decompress and de-filter
-                    image.data.extend(data);
+                    compressed_data.extend(data);
                 }
                 Chunk::BKGD(background) => {
-                    if !image.data.is_empty() {
+                    if !compressed_data.is_empty() {
                         pngerr!("bKGD chunk can not come after the IDAT chunk");
                     }
 
@@ -235,7 +238,6 @@ impl Image {
             }
         }
 
-        // TODO: validate the image
         // 4.1.2
         // This chunk must appear for color type 3, and can appear for
         // color types 2 and 6; it must not appear for color types 0 and
@@ -316,6 +318,11 @@ impl Image {
                 }
             }
         }
+
+        // decompress data
+        let mut decoder = ZlibDecoder::new(&compressed_data[..]);
+        decoder.read_to_end(&mut image.data)?;
+
         Ok(image)
     }
 }
