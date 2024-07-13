@@ -321,10 +321,43 @@ impl Image {
 
         // decompress data
         let mut decoder = ZlibDecoder::new(&compressed_data[..]);
-        decoder.read_to_end(&mut image.data)?;
+        let mut filtered = Vec::new();
+        decoder.read_to_end(&mut filtered)?;
+
+        image.data = reverse_filter(filtered, image.height);
 
         Ok(image)
     }
+}
+
+fn reverse_filter(filtered: Vec<u8>, height: u32) -> Vec<u8> {
+    // TODO
+    let mut zero = 0;
+    let mut one = 0;
+    let mut two = 0;
+    let mut three = 0;
+    let mut four = 0;
+
+    let width = filtered.len() / height as usize;
+    for r in 0..height {
+        match filtered[r as usize * width] {
+            0 => zero += 1,
+            1 => one += 1,
+            2 => two += 1,
+            3 => three += 1,
+            4 => four += 1,
+            _ => unreachable!(),
+        }
+    }
+
+    println!("First scanline has filter {}", filtered[0]);
+    println!("Filter | # Scanlines");
+    println!("0      | {}", zero);
+    println!("1      | {}", one);
+    println!("2      | {}", two);
+    println!("3      | {}", three);
+    println!("4      | {}", four);
+    filtered
 }
 
 impl Display for Image {
@@ -496,6 +529,3 @@ impl IHDRData {
         Ok(idhr)
     }
 }
-
-// TODO: These are points to reconsider
-//  1. Section 2.5 of the RFC states that "PNG defines several different filter algorithms".
