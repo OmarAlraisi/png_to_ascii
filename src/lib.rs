@@ -324,12 +324,13 @@ impl Image {
         let mut filtered = Vec::new();
         decoder.read_to_end(&mut filtered)?;
 
-        image.data = reverse_filter(filtered, &image)?;
+        reverse_filter(filtered, &mut image)?;
 
         Ok(image)
     }
 }
 
+#[derive(Debug)]
 enum FilterType {
     None,
     Sub,
@@ -354,102 +355,130 @@ impl FilterType {
 }
 
 /// RFC 2083 - Section 6
-fn reverse_filter(filtered: Vec<u8>, image: &Image) -> io::Result<Vec<u8>> {
-    let mut raw_data = Vec::new();
+fn reverse_filter(filtered: Vec<u8>, image: &mut Image) -> io::Result<()> {
     let width = filtered.len() / image.height as usize;
+    let bpp = match image.color_type {
+        ColorType::Greyscale => {
+            if image.bit_depth == 16 {
+                2
+            } else {
+                1
+            }
+        }
+        ColorType::RGB => {
+            if image.bit_depth == 8 {
+                3
+            } else {
+                6
+            }
+        }
+        ColorType::PaletteIndex => 1,
+        ColorType::GreyscaleAlpha => {
+            if image.bit_depth == 8 {
+                2
+            } else {
+                4
+            }
+        }
+        ColorType::RGBA => {
+            if image.bit_depth == 8 {
+                4
+            } else {
+                8
+            }
+        }
+    };
+
     for r in 0..image.height as usize {
         match FilterType::from(filtered[r * width])? {
             FilterType::None => {
-                raw_data.extend(&filtered[((r * width) + 1)..((r * width) + width)]);
+                image
+                    .data
+                    .extend(&filtered[((r * width) + 1)..((r * width) + width)]);
             }
             FilterType::Sub => {
-                // CHECK: Section 6.3
-                // Raw(x) = Sub(x) + Raw(x-bpp)
-                // x is the index of the byte to reverse its filter
-                // bpp is the number of bytes per complete pixel. In other words, bpp is the
-                // distance to the preceeding pixle
-
-                let bpp = match image.color_type {
-                    ColorType::Greyscale => {
-                        if image.bit_depth == 16 {
-                            2
-                        } else {
-                            1
-                        }
-                    }
-                    ColorType::RGB => {
-                        if image.bit_depth == 8 {
-                            3
-                        } else {
-                            6
-                        }
-                    }
-                    ColorType::PaletteIndex => 1,
-                    ColorType::GreyscaleAlpha => {
-                        if image.bit_depth == 8 {
-                            2
-                        } else {
-                            4
-                        }
-                    }
-                    ColorType::RGBA => {
-                        if image.bit_depth == 8 {
-                            6
-                        } else {
-                            12
-                        }
-                    }
-                };
-
+                // CHECK: Section 6.3: Raw(x) = Sub(x) + Raw(x-bpp)
                 for c in 1..width {
                     let x = (r * width) + c;
-                    if bpp > x {
-                        raw_data.push(filtered[x]);
+                    if c < bpp + 1 {
+                        image.data.push(filtered[x]);
                         continue;
                     }
 
-                    raw_data.push(filtered[x] + raw_data[x - bpp]);
+                    image
+                        .data
+                        .push(filtered[x].wrapping_add(image.data[x - bpp - r]));
                 }
             }
             FilterType::Up => {
-                // CHECK: Section 6.4
+                // CHECK: Section 6.4: Raw(x) = Up(x) + Prior(x)
                 for c in 1..width {
                     let x = (r * width) + c;
                     let prior = (r * (width - 1)) + c;
-                    if prior > x {
-                        raw_data.push(filtered[x]);
+                    if r == 0 {
+                        image.data.push(filtered[x]);
                         continue;
                     }
 
-                    raw_data.push(filtered[x] + filtered[x - prior]);
+                    image
+                        .data
+                        .push(filtered[x].wrapping_add(filtered[x - prior]));
                 }
             }
             FilterType::Average => {
-                // TODO: Section 6.5
-                // Average(x) = Raw(x) - floor((Raw(x-bpp)+Prior(x))/2)
+                // CHECK: Section 6.5: Raw(x) = Average(x) + floor((Raw(x-bpp)+Prior(x))/2)
+                for c in 1..width {
+                    let x = (r * width) + c;
+                    let raw_x_bpp = if c < bpp + 1 {
+                        0
+                    } else {
+                        filtered[x - bpp - r]
+                    };
+                    let prior = if r == 0 {
+                        0
+                    } else {
+                        filtered[(r * (width - 1)) + c]
+                    };
+                    let floor = ((raw_x_bpp as u16 + prior as u16) / 2) as u8;
+                    image.data.push(filtered[x].wrapping_add(floor));
+                }
             }
             FilterType::Paeth => {
-                // TODO: Section 6.6
-                // Paeth(x) = Raw(x) - PaethPredictor(Raw(x-bpp), Prior(x), Prior(x-bpp))
-                //
-                // function PaethPredictor (a, b, c)
-                // begin
-                //      ; a = left, b = above, c = upper left
-                //      p := a + b - c        ; initial estimate
-                //      pa := abs(p - a)      ; distances to a, b, c
-                //      pb := abs(p - b)
-                //      pc := abs(p - c)
-                //      ; return nearest of a,b,c,
-                //      ; breaking ties in order a,b,c.
-                //      if pa <= pb AND pa <= pc then return a
-                //      else if pb <= pc then return b
-                //      else return c
-                // end
+                // CHECK: Section 6.6: Raw(x) = Paeth(x) + PaethPredictor(Raw(x-bpp), Prior(x), Prior(x-bpp))
+                for c in 1..width {
+                    let x = (r * width) + c;
+                    let top_idx = (r * (width - 1)) + c;
+
+                    let left = if bpp > x { 0 } else { filtered[x - bpp - r] };
+                    let top = if r == 0 { 0 } else { filtered[top_idx] };
+                    let top_left = if r == 0 || c < bpp + 1 {
+                        0
+                    } else {
+                        filtered[top_idx - bpp]
+                    };
+                    let predictor = paeth_predictor(left, top, top_left);
+                    image.data.push(filtered[x].wrapping_add(predictor));
+                }
             }
         }
     }
 
-    Ok(raw_data)
+    Ok(())
+}
+
+fn paeth_predictor(left: u8, top: u8, top_left: u8) -> u8 {
+    let p = left as i16 + top as i16 - top_left as i16;
+    let pleft = 0i16.abs_diff(p - left as i16);
+    let ptop = 0i16.abs_diff(p - top as i16);
+    let ptop_left = 0i16.abs_diff(p - top_left as i16);
+
+    if pleft <= ptop && pleft <= ptop_left {
+        left
+    } else if ptop <= ptop_left {
+        top
+    } else {
+        top_left
+    }
 }
 
 impl Display for Image {
