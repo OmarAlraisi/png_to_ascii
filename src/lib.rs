@@ -107,6 +107,121 @@ impl Display for ColorType {
     }
 }
 
+pub struct Img {
+    grid: Vec<Vec<u8>>,
+}
+
+impl Img {
+    pub fn new(file: &str) -> io::Result<Self> {
+        let image = Image::from(file)?;
+        let mut grid = Vec::new();
+        let pixle_size = match image.color_type {
+            ColorType::Greyscale => {
+                if image.bit_depth == 16 {
+                    unimplemented!("only 8bit colors are supported");
+                } else {
+                    1
+                }
+            }
+            ColorType::RGB => {
+                if image.bit_depth == 8 {
+                    3
+                } else {
+                    unimplemented!("only 8bit colors are supported");
+                }
+            }
+            ColorType::PaletteIndex => 1,
+            ColorType::GreyscaleAlpha => {
+                if image.bit_depth == 8 {
+                    2
+                } else {
+                    unimplemented!("only 8bit colors are supported");
+                }
+            }
+            ColorType::RGBA => {
+                if image.bit_depth == 8 {
+                    4
+                } else {
+                    unimplemented!("only 8bit colors are supported");
+                }
+            }
+        };
+
+        for r in 0..image.height {
+            let mut row = Vec::new();
+            for c in 0..image.width {
+                let idx = (c * pixle_size) as usize + (r * image.width) as usize;
+                let value = match image.color_type {
+                    ColorType::Greyscale => image.data[idx],
+                    ColorType::RGB => {
+                        ((image.data[idx] as u32
+                            + image.data[idx + 1] as u32
+                            + image.data[idx + 2] as u32)
+                            / 3) as u8
+                    }
+                    ColorType::PaletteIndex => {
+                        let plte = image.plte.as_ref().unwrap();
+                        let entry = &plte[image.data[idx] as usize];
+
+                        ((entry._red as u32 + entry._green as u32 + entry._blue as u32) / 3) as u8
+                    }
+                    ColorType::GreyscaleAlpha => {
+                        ((image.data[idx] as u16 + image.data[idx + 1] as u16) / 2) as u8
+                    }
+                    ColorType::RGBA => {
+                        ((image.data[idx] as u32
+                            + image.data[idx + 1] as u32
+                            + image.data[idx + 2] as u32
+                            + image.data[idx + 3] as u32)
+                            / 4) as u8
+                    }
+                };
+                row.push(value)
+            }
+            grid.push(row);
+        }
+
+        Ok(Self { grid })
+    }
+
+    pub fn display(&self) {
+        // TODO: get the average of 15x30 pixles into a single pixle in the case of 1920x1080
+        let mut resized: Vec<Vec<u8>> = Vec::new();
+        let fact = 6;
+        for r in 0..self.grid.len() / (fact * 2) {
+            let mut row = Vec::new();
+            for c in 0..self.grid[0].len() / fact {
+                let start_r = r * fact * 2;
+                let start_c = c * fact;
+                let total = 11f32 * 22f32;
+                let mut ave = 0f32;
+                for i in 0..fact * 2 {
+                    let idx_y = start_r + i;
+                    for j in 0..fact {
+                        let idx_x = start_c + j;
+                        ave += self.grid[idx_y][idx_x] as f32 / total;
+                    }
+                }
+                row.push(ave as u8);
+            }
+            resized.push(row);
+        }
+
+        let chars: Vec<char> =
+            " `^\",:;Il!i~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$"
+                .chars()
+                .collect();
+        for row in resized {
+            for darkness in row {
+                let idx = ((66u16 * darkness as u16) / 255) as usize;
+                let idx = if idx > 65 { 65 } else { idx };
+                print!("{}", chars[idx]);
+            }
+            println!();
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Image {
     /// width in pixels
@@ -407,7 +522,7 @@ fn reverse_filter(filtered: Vec<u8>, image: &mut Image) -> io::Result<()> {
 
                     image
                         .data
-                        .push(filtered[x].wrapping_add(image.data[x - bpp - r]));
+                        .push(filtered[x].wrapping_add(image.data[x - bpp - 1 - r]));
                 }
             }
             FilterType::Up => {
@@ -432,7 +547,7 @@ fn reverse_filter(filtered: Vec<u8>, image: &mut Image) -> io::Result<()> {
                     let raw_x_bpp = if c < bpp + 1 {
                         0
                     } else {
-                        filtered[x - bpp - r]
+                        filtered[x - bpp - 1 - r]
                     };
                     let prior = if r == 0 {
                         0
@@ -449,7 +564,11 @@ fn reverse_filter(filtered: Vec<u8>, image: &mut Image) -> io::Result<()> {
                     let x = (r * width) + c;
                     let top_idx = (r * (width - 1)) + c;
 
-                    let left = if bpp > x { 0 } else { filtered[x - bpp - r] };
+                    let left = if bpp > x {
+                        0
+                    } else {
+                        filtered[x - bpp - 1 - r]
+                    };
                     let top = if r == 0 { 0 } else { filtered[top_idx] };
                     let top_left = if r == 0 || c < bpp + 1 {
                         0
