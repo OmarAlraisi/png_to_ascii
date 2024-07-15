@@ -441,8 +441,28 @@ impl Image {
 
         reverse_filter(filtered, &mut image)?;
 
+        convert_bit_depth(&mut image);
+
         Ok(image)
     }
+}
+
+/// Converts from 16-bit colors to 8-bit colors
+fn convert_bit_depth(image: &mut Image) {
+    if image.bit_depth != 16 {
+        return;
+    }
+
+    let mut converted = Vec::new();
+    for idx in 0..image.data.len() {
+        if idx % 2 == 0 {
+            converted
+                .push((u16::from_be_bytes([image.data[idx], image.data[idx + 1]]) / 256u16) as u8);
+        }
+    }
+
+    image.data = converted;
+    image.bit_depth = 8;
 }
 
 #[derive(Debug)]
