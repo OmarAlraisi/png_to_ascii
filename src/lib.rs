@@ -181,24 +181,31 @@ impl Img {
             grid.push(row);
         }
 
+        grid = resize_image(grid, &image);
         Ok(Self { grid })
     }
 
+    // TODO: Algo
+    //      - Convert to new desired width while maintaining aspect ratio
+    //      - Convert to greyscale
     pub fn display(&self) {
         // TODO: get the average of 15x30 pixles into a single pixle in the case of 1920x1080
         let mut resized: Vec<Vec<u8>> = Vec::new();
-        let fact = 6;
-        for r in 0..self.grid.len() / (fact * 2) {
+        let fact = 2;
+        for r in 0..self.grid.len() / (fact * 3 / 2) {
             let mut row = Vec::new();
             for c in 0..self.grid[0].len() / fact {
-                let start_r = r * fact * 2;
+                let start_r = r * fact * 3 / 2;
                 let start_c = c * fact;
-                let total = 11f32 * 22f32;
+                let total = fact as f32 * (fact * 3 / 3) as f32;
                 let mut ave = 0f32;
-                for i in 0..fact * 2 {
+                for i in 0..fact * 3 / 2 {
                     let idx_y = start_r + i;
                     for j in 0..fact {
                         let idx_x = start_c + j;
+                        if idx_y >= self.grid.len() || idx_x >= self.grid[0].len() {
+                            continue;
+                        }
                         ave += self.grid[idx_y][idx_x] as f32 / total;
                     }
                 }
@@ -220,6 +227,14 @@ impl Img {
             println!();
         }
     }
+}
+
+fn resize_image(grid: Vec<Vec<u8>>, image: &Image) -> Vec<Vec<u8>> {
+    let aspect_ratio = image.width as f32 / image.height as f32;
+    let target_height = 50usize;
+    let target_width = (aspect_ratio * target_height as f32) as usize;
+    println!("Image should be {}x{}", target_width, target_height);
+    grid
 }
 
 #[derive(Debug)]
@@ -525,6 +540,7 @@ fn reverse_filter(filtered: Vec<u8>, image: &mut Image) -> io::Result<()> {
     };
 
     for r in 0..image.height as usize {
+        let offset = r * width;
         match FilterType::from(filtered[r * width])? {
             FilterType::None => {
                 image
@@ -534,67 +550,72 @@ fn reverse_filter(filtered: Vec<u8>, image: &mut Image) -> io::Result<()> {
             FilterType::Sub => {
                 // CHECK: Section 6.3: Raw(x) = Sub(x) + Raw(x-bpp)
                 for c in 1..width {
-                    let x = (r * width) + c;
-                    if c < bpp + 1 {
-                        image.data.push(filtered[x]);
-                        continue;
-                    }
-
-                    image
-                        .data
-                        .push(filtered[x].wrapping_add(image.data[x - bpp - 1 - r]));
+                    let x = c + offset;
+                    let raw_x = if c <= bpp {
+                        filtered[x]
+                    } else {
+                        // (x - (r + 1)) because x is the index in the filtered array however we want the
+                        // index of the raw array. (r + 1) is the number of filter bytes.
+                        let raw_idx = x - (r + 1);
+                        filtered[x].wrapping_add(image.data[raw_idx - bpp])
+                    };
+                    image.data.push(raw_x);
                 }
             }
             FilterType::Up => {
                 // CHECK: Section 6.4: Raw(x) = Up(x) + Prior(x)
                 for c in 1..width {
-                    let x = (r * width) + c;
-                    let prior = (r * (width - 1)) + c;
-                    if r == 0 {
-                        image.data.push(filtered[x]);
-                        continue;
-                    }
-
-                    image
-                        .data
-                        .push(filtered[x].wrapping_add(filtered[x - prior]));
+                    let x = c + offset;
+                    let raw_x = if r == 0 {
+                        filtered[x]
+                    } else {
+                        let raw_idx = x - (r + 1);
+                        filtered[x].wrapping_add(image.data[raw_idx - (width - 1)])
+                    };
+                    image.data.push(raw_x);
                 }
             }
             FilterType::Average => {
                 // CHECK: Section 6.5: Raw(x) = Average(x) + floor((Raw(x-bpp)+Prior(x))/2)
                 for c in 1..width {
-                    let x = (r * width) + c;
-                    let raw_x_bpp = if c < bpp + 1 {
-                        0
-                    } else {
-                        filtered[x - bpp - 1 - r]
+                    let x = c + offset;
+                    let raw_idx = x - (r + 1);
+                    let raw_x = match (r == 0, c <= bpp) {
+                        (true, true) => filtered[x],
+                        (true, false) => filtered[x].wrapping_add(image.data[raw_idx - bpp]),
+                        (false, true) => {
+                            filtered[x].wrapping_add(image.data[raw_idx - (width - 1)])
+                        }
+                        (false, false) => filtered[x].wrapping_add(
+                            ((image.data[raw_idx - bpp] as u16
+                                + image.data[raw_idx - (width - 1)] as u16)
+                                / 2) as u8,
+                        ),
                     };
-                    let prior = if r == 0 {
-                        0
-                    } else {
-                        filtered[(r * (width - 1)) + c]
-                    };
-                    let floor = ((raw_x_bpp as u16 + prior as u16) / 2) as u8;
-                    image.data.push(filtered[x].wrapping_add(floor));
+                    image.data.push(raw_x);
                 }
             }
             FilterType::Paeth => {
                 // CHECK: Section 6.6: Raw(x) = Paeth(x) + PaethPredictor(Raw(x-bpp), Prior(x), Prior(x-bpp))
                 for c in 1..width {
-                    let x = (r * width) + c;
-                    let top_idx = (r * (width - 1)) + c;
+                    let x = c + offset;
+                    let raw_idx = x - (r + 1);
+                    let left = if c <= bpp {
+                        0
+                    } else {
+                        image.data[raw_idx - bpp]
+                    };
+                    let top = if r == 0 {
+                        0
+                    } else {
+                        image.data[raw_idx - (width - 1)]
+                    };
+                    let top_left = if r == 0 || c <= bpp {
+                        0
+                    } else {
+                        image.data[raw_idx - (width - 1) - bpp]
+                    };
 
-                    let left = if bpp > x {
-                        0
-                    } else {
-                        filtered[x - bpp - 1 - r]
-                    };
-                    let top = if r == 0 { 0 } else { filtered[top_idx] };
-                    let top_left = if r == 0 || c < bpp + 1 {
-                        0
-                    } else {
-                        filtered[top_idx - bpp]
-                    };
                     let predictor = paeth_predictor(left, top, top_left);
                     image.data.push(filtered[x].wrapping_add(predictor));
                 }
