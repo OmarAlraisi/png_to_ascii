@@ -181,46 +181,20 @@ impl Img {
             grid.push(row);
         }
 
+        // Convert to new desired width while maintaining aspect ratio
         grid = resize_image(grid, &image);
         Ok(Self { grid })
     }
 
-    // TODO: Algo
-    //      - Convert to new desired width while maintaining aspect ratio
-    //      - Convert to greyscale
+    // TODO: Convert to greyscale
     pub fn display(&self) {
-        // TODO: get the average of 15x30 pixles into a single pixle in the case of 1920x1080
-        let mut resized: Vec<Vec<u8>> = Vec::new();
-        let fact = 2;
-        for r in 0..self.grid.len() / (fact * 3 / 2) {
-            let mut row = Vec::new();
-            for c in 0..self.grid[0].len() / fact {
-                let start_r = r * fact * 3 / 2;
-                let start_c = c * fact;
-                let total = fact as f32 * (fact * 3 / 3) as f32;
-                let mut ave = 0f32;
-                for i in 0..fact * 3 / 2 {
-                    let idx_y = start_r + i;
-                    for j in 0..fact {
-                        let idx_x = start_c + j;
-                        if idx_y >= self.grid.len() || idx_x >= self.grid[0].len() {
-                            continue;
-                        }
-                        ave += self.grid[idx_y][idx_x] as f32 / total;
-                    }
-                }
-                row.push(ave as u8);
-            }
-            resized.push(row);
-        }
-
         let chars: Vec<char> =
             " `^\",:;Il!i~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$"
                 .chars()
                 .collect();
-        for row in resized {
+        for row in &self.grid {
             for darkness in row {
-                let idx = ((66u16 * darkness as u16) / 255) as usize;
+                let idx = ((66u16 * *darkness as u16) / 255) as usize;
                 let idx = if idx > 65 { 65 } else { idx };
                 print!("{}", chars[idx]);
             }
@@ -231,10 +205,21 @@ impl Img {
 
 fn resize_image(grid: Vec<Vec<u8>>, image: &Image) -> Vec<Vec<u8>> {
     let aspect_ratio = image.width as f32 / image.height as f32;
-    let target_height = 50usize;
+    let target_height = 150usize;
+    let vertical_skip = image.height as f32 / target_height as f32;
     let target_width = (aspect_ratio * target_height as f32) as usize;
-    println!("Image should be {}x{}", target_width, target_height);
-    grid
+    let horizontal_skip = image.width as f32 / target_width as f32;
+    let mut resized = Vec::new();
+    for r in 0..target_height {
+        let y = (r as f32 * vertical_skip) as usize;
+        let mut row = Vec::new();
+        for c in 0..target_width {
+            let x = (c as f32 * horizontal_skip) as usize;
+            row.push(grid[y][x]);
+        }
+        resized.push(row);
+    }
+    resized
 }
 
 #[derive(Debug)]

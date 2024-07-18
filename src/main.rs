@@ -10,6 +10,18 @@ fn main() -> io::Result<()> {
         .expect("ERR: Usage: png_to_ascii <path/to/image>");
 
     let image = Img::new(&file)?;
+    println!(
+        "<html>
+    <body>
+        <div style=\"line-height: 10px; font-size: 14px\">
+            <pre>"
+    );
     image.display();
+    println!(
+        "</pre>
+        </div>
+    </body>
+</html>"
+    );
     Ok(())
 }
